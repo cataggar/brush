@@ -1,0 +1,34 @@
+# ----- Stage 1: Build -----
+FROM mcr.microsoft.com/azurelinux/base/core:3.0 AS builder
+
+# Install build dependencies and Rust toolchain via tdnf
+RUN tdnf update -y && \
+    tdnf install -y \
+        rust \
+        cargo \
+        ca-certificates \
+        gcc \
+        binutils \
+        glibc-devel \
+        kernel-headers \
+        ncurses-term \
+    && tdnf clean all
+
+# Copy source
+WORKDIR /src
+COPY . .
+
+# Build release binary (statically links as much as possible via LTO + strip)
+RUN cargo build --release --package brush-shell --features brush-shell/coreutils-builtins
+
+# ----- Stage 2: Runtime (distroless) -----
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0
+
+# Copy terminfo database from builder for interactive terminal support.
+# Distroless has no package manager, so we copy from the builder stage
+# where ncurses-term was installed as a build dependency.
+COPY --from=builder /usr/share/terminfo /usr/share/terminfo
+
+# Copy the built binary
+COPY --from=builder /src/target/release/brush /usr/local/bin/brush
+ENTRYPOINT ["brush"]
