@@ -920,14 +920,21 @@ peg::parser! {
             legacy_arithmetic_expansion() /
             command_substitution() /
             parameter_expansion() /
+            heredoc_line_continuation() /
             heredoc_escape_sequence() /
             heredoc_literal_text()
+
+        // In a here-document whose delimiter is unquoted, a backslash-newline pair is a
+        // line continuation: it is removed outright, joining the two lines. (A delimiter
+        // that *is* quoted suppresses expansion altogether, so this rule never sees it.)
+        rule heredoc_line_continuation() -> WordPiece =
+            "\\\n" { WordPiece::Text(String::new()) }
 
         rule heredoc_escape_sequence() -> WordPiece =
             s:$("\\" ['$' | '`' | '\\']) { WordPiece::EscapeSequence(s.to_owned()) }
 
         rule heredoc_literal_text() -> WordPiece =
-            s:$((!heredoc_escape_sequence() !dollar_sign_word_piece() [^'`'])+) {
+            s:$((!heredoc_line_continuation() !heredoc_escape_sequence() !dollar_sign_word_piece() [^'`'])+) {
                 WordPiece::Text(s.to_owned())
             }
 
