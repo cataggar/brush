@@ -1,0 +1,16 @@
+# brush is a shell. Its test corpus is shell scripts, and shell is
+# newline-sensitive in ways most languages are not: a stray CR becomes part of a
+# here-document delimiter, a command name, or a `#!` interpreter path. A CRLF
+# checkout therefore doesn't just look different, it changes behavior -- so the
+# line ending is a correctness concern here, not a formatting preference.
+#
+# Every text file is checked out with LF on all platforms, regardless of the
+# user's core.autocrlf setting. `text` (not `text=auto`) is deliberate: it states
+# the intent outright rather than leaving it to git's binary heuristic, so a new
+# file can never be silently classified as binary and escape normalization.
+* text eol=lf
+
+# The one genuine binary in the tree. `binary` is shorthand for `-text -diff`,
+# which exempts it from the rule above; without this the blanket `text` would
+# corrupt it on checkout.
+*.png binary
