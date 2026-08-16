@@ -307,3 +307,37 @@ cases:
       done
       out=$(cat <<<"$payload")
       echo "${#out}"
+
+  - name: "Here doc with line continuation"
+    stdin: |
+      cat <<EOF
+      alpha \
+      beta
+      EOF
+
+  - name: "Here doc with line continuation and quoted tag"
+    stdin: |
+      cat <<'EOF'
+      alpha \
+      beta
+      EOF
+
+  - name: "Here doc with line continuation before expansion"
+    stdin: |
+      v=world
+      cat <<EOF
+      hello \
+      $v
+      EOF
+
+  - name: "Here doc escapes alongside line continuation"
+    stdin: |
+      v=world
+      cat <<EOF
+      plain $v
+      dollar \$v
+      backslash \\ end
+      backtick \` end
+      cont \
+      joined
+      EOF
