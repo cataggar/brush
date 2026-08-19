@@ -1908,7 +1908,6 @@ fn setup_process_substitution(
     kind: &ast::ProcessSubstitutionKind,
     subshell_cmd: &ast::SubshellCommand,
 ) -> Result<(ShellFd, OpenFile), error::Error> {
-    // TODO(execute): Don't execute synchronously!
     // Execute in a subshell.
     let mut subshell = shell.clone();
 
@@ -1931,16 +1930,17 @@ fn setup_process_substitution(
         }
     };
 
-    // Asynchronously spawn off the subshell; we intentionally don't block on its
-    // completion.
+    // Detach the subshell task: process substitutions can outlive the command that
+    // created them. Execution errors are written through the subshell's stderr, but
+    // task panics are intentionally not observed here.
     let subshell_cmd = subshell_cmd.to_owned();
-    tokio::spawn(async move {
+    drop(tokio::spawn(async move {
         // Intentionally ignore the result of the subshell command.
         let _ = subshell_cmd
             .list
             .execute(&mut subshell, &child_params)
             .await;
-    });
+    }));
 
     // Starting at 63 (a.k.a. 64-1)--and decrementing--look for an
     // available fd.
