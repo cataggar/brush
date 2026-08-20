@@ -27,12 +27,13 @@ pub(crate) fn ignored_signals() -> &'static [(i32, String)] {
 }
 
 fn query_ignored_signals() -> Vec<(i32, String)> {
-    let signals = Signal::iterator().map(|signal| (signal as i32, signal.as_str().to_owned()));
-
-    #[cfg(target_os = "linux")]
-    let signals = signals.chain(realtime_signals());
-
-    signals
+    Signal::iterator()
+        .map(|signal| (signal as i32, signal.as_str().to_owned()))
+        .chain(
+            realtime_signal_definitions()
+                .iter()
+                .map(|(number, name)| (*number, name.clone())),
+        )
         .filter_map(|(number, name)| match signal_is_ignored(number) {
             Ok(true) => Some((number, name)),
             Ok(false) | Err(_) => None,
@@ -55,23 +56,71 @@ fn signal_is_ignored(signal: i32) -> Result<bool, error::Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn realtime_signals() -> impl Iterator<Item = (i32, String)> {
+pub(crate) fn realtime_signal_definitions() -> &'static [(i32, String)] {
+    static SIGNALS: std::sync::OnceLock<Vec<(i32, String)>> = std::sync::OnceLock::new();
+
+    SIGNALS.get_or_init(|| {
+        let min = nix::libc::SIGRTMIN();
+        let max = nix::libc::SIGRTMAX();
+        let midpoint = min + (max - min) / 2;
+
+        (min..=max)
+            .map(|signal| {
+                let name = if signal == min {
+                    "SIGRTMIN".to_owned()
+                } else if signal <= midpoint {
+                    format!("SIGRTMIN+{}", signal - min)
+                } else if signal == max {
+                    "SIGRTMAX".to_owned()
+                } else {
+                    format!("SIGRTMAX-{}", max - signal)
+                };
+                (signal, name)
+            })
+            .collect()
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) const fn realtime_signal_definitions() -> &'static [(i32, String)] {
+    &[]
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn realtime_signal_from_name(name: &str) -> Option<i32> {
     let min = nix::libc::SIGRTMIN();
     let max = nix::libc::SIGRTMAX();
     let midpoint = min + (max - min) / 2;
 
-    (min..=max).map(move |signal| {
-        let name = if signal == min {
-            "SIGRTMIN".to_owned()
-        } else if signal <= midpoint {
-            format!("SIGRTMIN+{}", signal - min)
-        } else if signal == max {
-            "SIGRTMAX".to_owned()
-        } else {
-            format!("SIGRTMAX-{}", max - signal)
-        };
-        (signal, name)
-    })
+    if name == "SIGRTMIN" {
+        min
+    } else if name == "SIGRTMAX" {
+        max
+    } else if let Some(offset) = name
+        .strip_prefix("SIGRTMIN+")
+        .and_then(|offset| offset.parse::<i32>().ok())
+    {
+        min.checked_add(offset)
+            .filter(|number| (min..=max).contains(number))?
+    } else {
+        let offset = name
+            .strip_prefix("SIGRTMAX-")
+            .and_then(|offset| offset.parse::<i32>().ok())?;
+        max.checked_sub(offset)
+            .filter(|number| (midpoint < *number) && (*number < max))?
+    }
+    .into()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) const fn realtime_signal_from_name(_name: &str) -> Option<i32> {
+    None
+}
+
+pub(crate) fn realtime_signal_name(number: i32) -> Option<&'static str> {
+    realtime_signal_definitions()
+        .iter()
+        .find_map(|(candidate, name)| (*candidate == number).then_some(name.as_str()))
 }
 
 pub(crate) fn continue_process(pid: sys::process::ProcessId) -> Result<(), error::Error> {
@@ -90,7 +139,8 @@ pub fn kill_process(
     signal: traps::TrapSignal,
 ) -> Result<(), error::Error> {
     let translated_signal = match signal {
-        traps::TrapSignal::Signal(signal) => signal,
+        traps::TrapSignal::Signal(signal) => signal as i32,
+        traps::TrapSignal::RealtimeSignal(signal) => signal.number(),
         traps::TrapSignal::Debug
         | traps::TrapSignal::Err
         | traps::TrapSignal::Exit
@@ -99,7 +149,8 @@ pub fn kill_process(
         }
     };
 
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), translated_signal)
+    // SAFETY: `kill` does not dereference pointers; both arguments are plain integers.
+    nix::errno::Errno::result(unsafe { nix::libc::kill(pid, translated_signal) })
         .map_err(|_errno| error::ErrorKind::FailedToSendSignal)?;
 
     Ok(())
@@ -236,4 +287,82 @@ fn siginfo_to_wait_status(
     };
 
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use super::super::{
+            realtime_signal_definitions, realtime_signal_from_name, realtime_signal_name,
+        };
+
+        #[test]
+        fn realtime_signal_names_use_runtime_bounds() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let midpoint = min + (max - min) / 2;
+
+            assert_eq!(realtime_signal_name(min), Some("SIGRTMIN"));
+            assert_eq!(realtime_signal_name(max), Some("SIGRTMAX"));
+            assert_eq!(
+                realtime_signal_name(midpoint),
+                Some(format!("SIGRTMIN+{}", midpoint - min).as_str())
+            );
+            assert_eq!(
+                realtime_signal_name(midpoint + 1),
+                Some(format!("SIGRTMAX-{}", max - midpoint - 1).as_str())
+            );
+        }
+
+        #[test]
+        fn realtime_signal_names_and_numbers_are_parsed() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let span = max - min;
+
+            assert_eq!(realtime_signal_from_name("SIGRTMIN"), Some(min));
+            assert_eq!(realtime_signal_from_name("SIGRTMIN+0"), Some(min));
+            assert_eq!(
+                realtime_signal_from_name(format!("SIGRTMIN+{span}").as_str()),
+                Some(max)
+            );
+            assert_eq!(realtime_signal_from_name("SIGRTMAX-1"), Some(max - 1));
+            assert!(realtime_signal_name(min).is_some());
+            assert!(realtime_signal_name(max).is_some());
+        }
+
+        #[test]
+        fn invalid_realtime_signal_offsets_are_rejected() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let span = max - min;
+
+            assert!(realtime_signal_from_name(format!("SIGRTMIN+{}", span + 1).as_str()).is_none());
+            assert!(realtime_signal_from_name("SIGRTMAX-0").is_none());
+            assert!(realtime_signal_from_name(format!("SIGRTMAX-{span}").as_str()).is_none());
+            assert!(realtime_signal_name(min - 1).is_none());
+            assert!(realtime_signal_name(max + 1).is_none());
+        }
+
+        #[test]
+        fn iterator_uses_canonical_realtime_names() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let realtime = realtime_signal_definitions();
+
+            assert_eq!(
+                realtime.len(),
+                usize::try_from(max - min + 1).unwrap_or_default()
+            );
+            assert_eq!(
+                realtime.first().map(|(_, name)| name.as_str()),
+                Some("SIGRTMIN")
+            );
+            assert_eq!(
+                realtime.last().map(|(_, name)| name.as_str()),
+                Some("SIGRTMAX")
+            );
+        }
+    }
 }

@@ -17,7 +17,7 @@ pub(crate) mod wasm;
 #[cfg(target_family = "wasm")]
 pub(crate) use wasm as platform;
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), test))]
 pub(crate) mod stubs;
 
 #[cfg(any(unix, windows))]
