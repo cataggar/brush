@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     ExecutionControlFlow, ExecutionResult, builtins, env::ShellEnvironment, error, extensions,
-    functions, interfaces, jobs, keywords, openfiles, options::RuntimeOptions, pathcache,
+    functions, interfaces, jobs, keywords, openfiles, options::RuntimeOptions, pathcache, sys,
     wellknownvars,
 };
 
@@ -210,6 +210,7 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
     pub(crate) fn new(options: CreateOptions<SE>) -> Result<Self, error::Error> {
         // Compute runtime options before moving fields out of `options`.
         let runtime_options = RuntimeOptions::defaults_from(&options);
+        let ignored_signals = sys::signal::ignored_signals();
 
         // Instantiate the shell with some defaults.
         let mut shell = Self {
@@ -226,6 +227,12 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
             key_bindings: options.key_bindings,
             ..Self::default()
         };
+
+        for (number, name) in ignored_signals {
+            shell
+                .traps
+                .record_ignored_signal_at_entry(*number, name.clone());
+        }
 
         // Add in any open files provided.
         shell.open_files.update_from(options.fds.into_iter());

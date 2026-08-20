@@ -71,6 +71,13 @@ impl TrapCommand {
         for (signal, _) in context.shell.traps().iter_handlers() {
             Self::display_handlers_for(context, signal)?;
         }
+        for (number, name) in context.shell.traps().iter_ignored_signals_at_entry() {
+            let has_handler = TrapSignal::try_from(number)
+                .is_ok_and(|signal| context.shell.traps().handles(signal));
+            if !has_handler {
+                writeln!(context.stdout(), "trap -- '' {name}")?;
+            }
+        }
         Ok(())
     }
 
@@ -84,6 +91,12 @@ impl TrapCommand {
                 "trap -- '{}' {signal_type}",
                 handler.command
             )?;
+        } else if let Some(name) = context
+            .shell
+            .traps()
+            .ignored_signal_name_at_entry(signal_type)
+        {
+            writeln!(context.stdout(), "trap -- '' {name}")?;
         }
         Ok(())
     }
