@@ -145,9 +145,16 @@ fn print_signals(
 
             let signal = if let Ok(n) = s.parse::<i32>() {
                 // bash compatibility. `SIGHUP` -> `HUP`
-                TrapSignal::try_from(n).map(|s| {
-                    PrintSignal::Name(s.as_str().strip_prefix("SIG").unwrap_or(s.as_str()))
-                })
+                TrapSignal::try_from(n)
+                    .or_else(|error| {
+                        n.checked_sub(128)
+                            .filter(|signal| *signal > 0)
+                            .ok_or(error)
+                            .and_then(TrapSignal::try_from)
+                    })
+                    .map(|s| {
+                        PrintSignal::Name(s.as_str().strip_prefix("SIG").unwrap_or(s.as_str()))
+                    })
             } else {
                 TrapSignal::try_from(s.as_str()).map(|sig| {
                     i32::try_from(sig).map_or(PrintSignal::Name(sig.as_str()), PrintSignal::Num)

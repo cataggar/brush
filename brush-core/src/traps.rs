@@ -12,6 +12,8 @@ use crate::{error, sys};
 pub enum TrapSignal {
     /// A system signal.
     Signal(sys::signal::Signal),
+    /// A real-time system signal.
+    RealtimeSignal(RealtimeSignal),
     /// The `DEBUG` trap.
     Debug,
     /// The `ERR` trap.
@@ -20,6 +22,24 @@ pub enum TrapSignal {
     Exit,
     /// The `RETURN` trp.
     Return,
+}
+
+/// A real-time system signal.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RealtimeSignal {
+    number: i32,
+    name: &'static str,
+}
+
+impl RealtimeSignal {
+    /// Returns the platform signal number.
+    pub const fn number(self) -> i32 {
+        self.number
+    }
+
+    const fn as_str(self) -> &'static str {
+        self.name
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -56,7 +76,15 @@ impl TrapSignal {
 
         let iter = itertools::chain!(
             SIGNALS.iter().copied(),
-            sys::signal::Signal::iterator().map(TrapSignal::Signal)
+            sys::signal::Signal::iterator().map(TrapSignal::Signal),
+            sys::signal::realtime_signal_definitions()
+                .iter()
+                .map(|(number, name)| {
+                    Self::RealtimeSignal(RealtimeSignal {
+                        number: *number,
+                        name: name.as_str(),
+                    })
+                })
         );
 
         iter
@@ -66,6 +94,7 @@ impl TrapSignal {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Signal(s) => s.as_str(),
+            Self::RealtimeSignal(s) => s.as_str(),
             Self::Debug => "DEBUG",
             Self::Err => "ERR",
             Self::Exit => "EXIT",
@@ -113,10 +142,18 @@ impl TryFrom<i32> for TrapSignal {
         // and don't have persistent numbers across platforms, so we skip them here.
         Ok(match value {
             0 => Self::Exit,
-            value => Self::Signal(
-                sys::signal::Signal::try_from(value)
-                    .map_err(|_| error::ErrorKind::InvalidSignal(value.to_string()))?,
-            ),
+            value => {
+                if let Ok(signal) = sys::signal::Signal::try_from(value) {
+                    Self::Signal(signal)
+                } else if sys::signal::realtime_signal_name(value).is_some() {
+                    Self::RealtimeSignal(RealtimeSignal {
+                        number: value,
+                        name: sys::signal::realtime_signal_name(value).unwrap_or_default(),
+                    })
+                } else {
+                    return Err(error::ErrorKind::InvalidSignal(value.to_string()).into());
+                }
+            }
         })
     }
 }
@@ -139,9 +176,16 @@ impl TryFrom<&str> for TrapSignal {
                 if !s.starts_with("SIG") {
                     s.insert_str(0, "SIG");
                 }
-                sys::signal::Signal::from_str(s.as_str())
-                    .map(TrapSignal::Signal)
-                    .map_err(|_| error::ErrorKind::InvalidSignal(value.into()))?
+                if let Ok(signal) = sys::signal::Signal::from_str(s.as_str()) {
+                    Self::Signal(signal)
+                } else if let Some(number) = sys::signal::realtime_signal_from_name(s.as_str()) {
+                    Self::RealtimeSignal(RealtimeSignal {
+                        number,
+                        name: sys::signal::realtime_signal_name(number).unwrap_or_default(),
+                    })
+                } else {
+                    return Err(error::ErrorKind::InvalidSignal(value.into()).into());
+                }
             }
         })
     }
@@ -156,6 +200,7 @@ impl TryFrom<TrapSignal> for i32 {
     fn try_from(value: TrapSignal) -> Result<Self, Self::Error> {
         Ok(match value {
             TrapSignal::Signal(s) => s as Self,
+            TrapSignal::RealtimeSignal(s) => s.number(),
             TrapSignal::Exit => 0,
             _ => return Err(TrapSignalNumberError),
         })
@@ -266,6 +311,14 @@ impl TrapHandlerConfig {
 #[cfg(test)]
 mod tests {
     use super::{TrapHandlerConfig, TrapSignal};
+
+    #[cfg(unix)]
+    #[test]
+    fn signal_variant_preserves_nix_signal_payload() {
+        const SIGNAL: TrapSignal = TrapSignal::Signal(nix::sys::signal::Signal::SIGTERM);
+
+        assert_eq!(SIGNAL.as_str(), "SIGTERM");
+    }
 
     #[test]
     fn ignored_signal_can_be_looked_up_by_trap_signal() {

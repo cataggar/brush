@@ -99,7 +99,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
             // EXIT and system signals are always inherited — i.e. their visibility is
             // not gated by errtrace/functrace options. (The actual trap *state* for
             // subshells is managed separately via `Shell::clone`.)
-            TrapSignal::Exit | TrapSignal::Signal(_) => true,
+            TrapSignal::Exit | TrapSignal::Signal(_) | TrapSignal::RealtimeSignal(_) => true,
         }
     }
 }
