@@ -63,7 +63,7 @@ impl TrapSignal {
     }
 
     /// Converts [`TrapSignal`] into its corresponding signal name as a [`&'static str`](str)
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Signal(s) => s.as_str(),
             Self::Debug => "DEBUG",
@@ -155,7 +155,7 @@ impl TryFrom<TrapSignal> for i32 {
     type Error = TrapSignalNumberError;
     fn try_from(value: TrapSignal) -> Result<Self, Self::Error> {
         Ok(match value {
-            TrapSignal::Signal(s) => s as Self,
+            TrapSignal::Signal(s) => s.number(),
             TrapSignal::Exit => 0,
             _ => return Err(TrapSignalNumberError),
         })
@@ -273,7 +273,7 @@ mod tests {
             return;
         };
         let mut traps = TrapHandlerConfig::default();
-        traps.record_ignored_signal_at_entry(signal as i32, signal.as_str().to_owned());
+        traps.record_ignored_signal_at_entry(signal.number(), signal.as_str().to_owned());
 
         assert_eq!(
             traps.ignored_signal_name_at_entry(TrapSignal::Signal(signal)),
@@ -299,7 +299,7 @@ mod tests {
         };
         let trap_signal = TrapSignal::Signal(signal);
         let mut traps = TrapHandlerConfig::default();
-        traps.record_ignored_signal_at_entry(signal as i32, signal.as_str().to_owned());
+        traps.record_ignored_signal_at_entry(signal.number(), signal.as_str().to_owned());
 
         traps.register_handler(
             trap_signal,

@@ -2,7 +2,78 @@
 
 use crate::{error, sys, traps};
 
-pub(crate) use nix::sys::signal::Signal;
+/// A signal supported by the current platform.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct Signal {
+    number: i32,
+}
+
+impl Signal {
+    /// Returns an iterator over all signals recognized by the shell.
+    pub fn iterator() -> impl Iterator<Item = Self> {
+        nix::sys::signal::Signal::iterator().map(Self::from).chain(
+            realtime_signal_definitions()
+                .iter()
+                .map(|(number, _)| Self { number: *number }),
+        )
+    }
+
+    /// Returns the canonical name for this signal.
+    pub fn as_str(self) -> &'static str {
+        if let Ok(signal) = nix::sys::signal::Signal::try_from(self.number) {
+            signal.as_str()
+        } else {
+            realtime_signal_definitions()
+                .iter()
+                .find_map(|(number, name)| (*number == self.number).then_some(name.as_str()))
+                .unwrap_or_default()
+        }
+    }
+
+    /// Returns the platform signal number.
+    pub const fn number(self) -> i32 {
+        self.number
+    }
+}
+
+impl std::str::FromStr for Signal {
+    type Err = error::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(signal) = s.parse::<nix::sys::signal::Signal>() {
+            return Ok(Self::from(signal));
+        }
+
+        realtime_signal_from_name(s).ok_or_else(|| error::ErrorKind::InvalidSignal(s.into()).into())
+    }
+}
+
+impl From<nix::sys::signal::Signal> for Signal {
+    fn from(value: nix::sys::signal::Signal) -> Self {
+        Self {
+            number: value as i32,
+        }
+    }
+}
+
+impl TryFrom<i32> for Signal {
+    type Error = error::Error;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        if let Ok(signal) = nix::sys::signal::Signal::try_from(value) {
+            return Ok(Self::from(signal));
+        }
+
+        if realtime_signal_definitions()
+            .iter()
+            .any(|(number, _)| *number == value)
+        {
+            Ok(Self { number: value })
+        } else {
+            Err(error::ErrorKind::InvalidSignal(value.to_string()).into())
+        }
+    }
+}
 
 static PROCESS_ENTRY_IGNORED_SIGNALS: std::sync::OnceLock<Vec<(i32, String)>> =
     std::sync::OnceLock::new();
@@ -27,12 +98,8 @@ pub(crate) fn ignored_signals() -> &'static [(i32, String)] {
 }
 
 fn query_ignored_signals() -> Vec<(i32, String)> {
-    let signals = Signal::iterator().map(|signal| (signal as i32, signal.as_str().to_owned()));
-
-    #[cfg(target_os = "linux")]
-    let signals = signals.chain(realtime_signals());
-
-    signals
+    Signal::iterator()
+        .map(|signal| (signal.number(), signal.as_str().to_owned()))
         .filter_map(|(number, name)| match signal_is_ignored(number) {
             Ok(true) => Some((number, name)),
             Ok(false) | Err(_) => None,
@@ -55,23 +122,68 @@ fn signal_is_ignored(signal: i32) -> Result<bool, error::Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn realtime_signals() -> impl Iterator<Item = (i32, String)> {
+fn realtime_signal_definitions() -> &'static [(i32, String)] {
+    static SIGNALS: std::sync::OnceLock<Vec<(i32, String)>> = std::sync::OnceLock::new();
+
+    SIGNALS.get_or_init(|| {
+        let min = nix::libc::SIGRTMIN();
+        let max = nix::libc::SIGRTMAX();
+        let midpoint = min + (max - min) / 2;
+
+        (min..=max)
+            .map(|signal| {
+                let name = if signal == min {
+                    "SIGRTMIN".to_owned()
+                } else if signal <= midpoint {
+                    format!("SIGRTMIN+{}", signal - min)
+                } else if signal == max {
+                    "SIGRTMAX".to_owned()
+                } else {
+                    format!("SIGRTMAX-{}", max - signal)
+                };
+                (signal, name)
+            })
+            .collect()
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn realtime_signal_definitions() -> &'static [(i32, String)] {
+    &[]
+}
+
+#[cfg(target_os = "linux")]
+fn realtime_signal_from_name(name: &str) -> Option<Signal> {
     let min = nix::libc::SIGRTMIN();
     let max = nix::libc::SIGRTMAX();
     let midpoint = min + (max - min) / 2;
 
-    (min..=max).map(move |signal| {
-        let name = if signal == min {
-            "SIGRTMIN".to_owned()
-        } else if signal <= midpoint {
-            format!("SIGRTMIN+{}", signal - min)
-        } else if signal == max {
-            "SIGRTMAX".to_owned()
-        } else {
-            format!("SIGRTMAX-{}", max - signal)
-        };
-        (signal, name)
-    })
+    let number = if name == "SIGRTMIN" {
+        min
+    } else if name == "SIGRTMAX" {
+        max
+    } else if let Some(offset) = name
+        .strip_prefix("SIGRTMIN+")
+        .and_then(|offset| offset.parse::<i32>().ok())
+    {
+        min.checked_add(offset)
+            .filter(|number| (min..=max).contains(number))?
+    } else if let Some(offset) = name
+        .strip_prefix("SIGRTMAX-")
+        .and_then(|offset| offset.parse::<i32>().ok())
+    {
+        max.checked_sub(offset)
+            .filter(|number| (midpoint < *number) && (*number < max))?
+    } else {
+        return None;
+    };
+
+    Some(Signal { number })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn realtime_signal_from_name(_name: &str) -> Option<Signal> {
+    None
 }
 
 pub(crate) fn continue_process(pid: sys::process::ProcessId) -> Result<(), error::Error> {
@@ -90,7 +202,7 @@ pub fn kill_process(
     signal: traps::TrapSignal,
 ) -> Result<(), error::Error> {
     let translated_signal = match signal {
-        traps::TrapSignal::Signal(signal) => signal,
+        traps::TrapSignal::Signal(signal) => signal.number(),
         traps::TrapSignal::Debug
         | traps::TrapSignal::Err
         | traps::TrapSignal::Exit
@@ -99,7 +211,8 @@ pub fn kill_process(
         }
     };
 
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), translated_signal)
+    // SAFETY: `kill` does not dereference pointers; both arguments are plain integers.
+    nix::errno::Errno::result(unsafe { nix::libc::kill(pid, translated_signal) })
         .map_err(|_errno| error::ErrorKind::FailedToSendSignal)?;
 
     Ok(())
@@ -236,4 +349,100 @@ fn siginfo_to_wait_status(
     };
 
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use super::super::Signal;
+
+        #[test]
+        fn realtime_signal_names_use_runtime_bounds() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let midpoint = min + (max - min) / 2;
+
+            assert_eq!(
+                Signal::try_from(min).ok().map(Signal::as_str),
+                Some("SIGRTMIN")
+            );
+            assert_eq!(
+                Signal::try_from(max).ok().map(Signal::as_str),
+                Some("SIGRTMAX")
+            );
+            assert_eq!(
+                Signal::try_from(midpoint).ok().map(Signal::as_str),
+                Some(format!("SIGRTMIN+{}", midpoint - min).as_str())
+            );
+            assert_eq!(
+                Signal::try_from(midpoint + 1).ok().map(Signal::as_str),
+                Some(format!("SIGRTMAX-{}", max - midpoint - 1).as_str())
+            );
+        }
+
+        #[test]
+        fn realtime_signal_names_and_numbers_are_parsed() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let span = max - min;
+
+            assert_eq!(
+                "SIGRTMIN".parse::<Signal>().ok().map(Signal::number),
+                Some(min)
+            );
+            assert_eq!(
+                "SIGRTMIN+0".parse::<Signal>().ok().map(Signal::number),
+                Some(min)
+            );
+            assert_eq!(
+                format!("SIGRTMIN+{span}")
+                    .parse::<Signal>()
+                    .ok()
+                    .map(Signal::number),
+                Some(max)
+            );
+            assert_eq!(
+                "SIGRTMAX-1".parse::<Signal>().ok().map(Signal::number),
+                Some(max - 1)
+            );
+            assert_eq!(Signal::try_from(min).ok().map(Signal::number), Some(min));
+            assert_eq!(Signal::try_from(max).ok().map(Signal::number), Some(max));
+        }
+
+        #[test]
+        fn invalid_realtime_signal_offsets_are_rejected() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let span = max - min;
+
+            assert!(format!("SIGRTMIN+{}", span + 1).parse::<Signal>().is_err());
+            assert!("SIGRTMAX-0".parse::<Signal>().is_err());
+            assert!(format!("SIGRTMAX-{span}").parse::<Signal>().is_err());
+            assert!(Signal::try_from(min - 1).is_err());
+            assert!(Signal::try_from(max + 1).is_err());
+        }
+
+        #[test]
+        fn iterator_uses_canonical_realtime_names() {
+            let min = nix::libc::SIGRTMIN();
+            let max = nix::libc::SIGRTMAX();
+            let realtime = Signal::iterator()
+                .filter(|signal| (min..=max).contains(&signal.number()))
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                realtime.len(),
+                usize::try_from(max - min + 1).unwrap_or_default()
+            );
+            assert_eq!(
+                realtime.first().map(|signal| signal.as_str()),
+                Some("SIGRTMIN")
+            );
+            assert_eq!(
+                realtime.last().map(|signal| signal.as_str()),
+                Some("SIGRTMAX")
+            );
+        }
+    }
 }

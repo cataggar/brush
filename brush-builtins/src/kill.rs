@@ -34,7 +34,7 @@ impl builtins::Command for KillCommand {
         context: brush_core::ExecutionContext<'_, SE>,
     ) -> Result<brush_core::ExecutionResult, Self::Error> {
         // Default signal is SIGKILL.
-        let mut trap_signal = TrapSignal::Signal(nix::sys::signal::Signal::SIGKILL);
+        let mut trap_signal = TrapSignal::Signal(nix::sys::signal::Signal::SIGKILL.into());
 
         // Try parsing the signal name (if specified).
         if let Some(signal_name) = &self.signal_name {

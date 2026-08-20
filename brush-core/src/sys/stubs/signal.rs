@@ -18,8 +18,16 @@ impl Signal {
         ""
     }
 
-    /// Creates a `Signal` from a string representation.
-    pub fn from_str(s: &str) -> Result<Self, error::Error> {
+    /// Returns the platform signal number.
+    pub const fn number(self) -> i32 {
+        match self {}
+    }
+}
+
+impl std::str::FromStr for Signal {
+    type Err = error::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         Err(error::ErrorKind::InvalidSignal(s.into()).into())
     }
 }

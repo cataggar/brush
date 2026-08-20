@@ -26,7 +26,7 @@ impl builtins::Command for SuspendCommand {
         #[expect(clippy::cast_possible_wrap)]
         brush_core::sys::signal::kill_process(
             std::process::id() as i32,
-            brush_core::traps::TrapSignal::Signal(nix::sys::signal::SIGSTOP),
+            brush_core::traps::TrapSignal::Signal(nix::sys::signal::SIGSTOP.into()),
         )?;
 
         Ok(ExecutionResult::success())
