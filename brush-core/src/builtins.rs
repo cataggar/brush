@@ -72,6 +72,12 @@ pub trait Command: clap::Parser {
 
     /// Executes the built-in command in the provided context.
     ///
+    /// Builtins can execute inline on the task that invoked them, which is commonly a runtime
+    /// worker. An implementation must not block that worker indefinitely on a file descriptor:
+    /// doing so can prevent a process-substitution producer from being polled and deadlock the
+    /// shell. Wrap synchronous reads that may wait on a pipe in
+    /// [`crate::openfiles::without_parking_worker`].
+    ///
     /// # Arguments
     ///
     /// * `context` - The context in which the command is being executed.
