@@ -231,12 +231,19 @@ impl TrapHandlerConfig {
     /// * `signal_type` - The type of signal to register a handler for.
     /// * `command` - The command to execute when the signal is trapped.
     /// * `source_info` - The source info for where the trap handler was defined.
+    ///
+    /// Signals recorded as ignored at shell entry remain ignored, so registration attempts for
+    /// them are silently declined.
     pub fn register_handler(
         &mut self,
         signal_type: TrapSignal,
         command: String,
         source_info: crate::SourceInfo,
     ) {
+        if self.ignored_signal_name_at_entry(signal_type).is_some() {
+            return;
+        }
+
         let _ = self.handlers.insert(
             signal_type,
             TrapHandler {
@@ -283,5 +290,45 @@ mod tests {
         let ignored = cloned.iter_ignored_signals_at_entry().collect::<Vec<_>>();
 
         assert_eq!(ignored, vec![(10, "SIGUSR1")]);
+    }
+
+    #[test]
+    fn ignored_signal_at_entry_cannot_be_trapped_or_reset() {
+        let Some(signal) = crate::sys::signal::Signal::iterator().next() else {
+            return;
+        };
+        let trap_signal = TrapSignal::Signal(signal);
+        let mut traps = TrapHandlerConfig::default();
+        traps.record_ignored_signal_at_entry(signal as i32, signal.as_str().to_owned());
+
+        traps.register_handler(
+            trap_signal,
+            "echo caught".to_owned(),
+            crate::SourceInfo::default(),
+        );
+        traps.remove_handlers(trap_signal);
+
+        assert!(!traps.handles(trap_signal));
+        assert_eq!(
+            traps.ignored_signal_name_at_entry(trap_signal),
+            Some(signal.as_str())
+        );
+    }
+
+    #[test]
+    fn signal_not_ignored_at_entry_can_be_trapped() {
+        let Some(signal) = crate::sys::signal::Signal::iterator().next() else {
+            return;
+        };
+        let trap_signal = TrapSignal::Signal(signal);
+        let mut traps = TrapHandlerConfig::default();
+
+        traps.register_handler(
+            trap_signal,
+            "echo caught".to_owned(),
+            crate::SourceInfo::default(),
+        );
+
+        assert!(traps.handles(trap_signal));
     }
 }

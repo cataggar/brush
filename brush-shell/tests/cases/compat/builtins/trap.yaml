@@ -562,6 +562,20 @@ cases:
     stdin: |
       bash -c 'trap "" USR1; exec "$1" --norc --noprofile -c "trap -p USR1; (trap -p USR1)"' _ "$0"
 
+  - name: "signals ignored at shell entry cannot be trapped or reset"
+    stdin: |
+      bash -c 'trap "" USR1; signal=$(kill -l USR1); exec "$1" --norc --noprofile -c "$2" _ "$signal"' _ "$0" '
+        trap "echo named" USR1
+        trap -p USR1
+        trap - USR1
+        trap -p USR1
+        trap "echo numeric" "$1"
+        trap -p "$1"
+        trap - "$1"
+        trap -p "$1"
+        (trap "echo subshell" USR1; trap -p USR1)
+      '
+
   - name: "trap -p - with specific signal"
     stdin: |
       trap 'echo "[int]"' INT
