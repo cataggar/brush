@@ -113,7 +113,7 @@ pub(crate) fn realtime_signal_from_name(name: &str) -> Option<i32> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn realtime_signal_from_name(_name: &str) -> Option<i32> {
+pub(crate) const fn realtime_signal_from_name(_name: &str) -> Option<i32> {
     None
 }
 
