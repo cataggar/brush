@@ -178,6 +178,9 @@ pub struct TrapHandler {
 pub struct TrapHandlerConfig {
     /// Registered handlers for traps; maps signal type to command.
     handlers: HashMap<TrapSignal, TrapHandler>,
+    /// Signals whose disposition was ignored when the shell was created.
+    #[cfg_attr(feature = "serde", serde(default))]
+    ignored_signals_at_entry: HashMap<i32, String>,
 }
 
 impl TrapHandlerConfig {
@@ -200,6 +203,25 @@ impl TrapHandlerConfig {
     /// Returns whether a handler is registered for the given signal.
     pub fn handles(&self, signal_type: TrapSignal) -> bool {
         self.handlers.contains_key(&signal_type)
+    }
+
+    /// Iterates over signals that were ignored when the shell was created.
+    pub fn iter_ignored_signals_at_entry(&self) -> impl Iterator<Item = (i32, &str)> {
+        self.ignored_signals_at_entry
+            .iter()
+            .map(|(number, name)| (*number, name.as_str()))
+    }
+
+    /// Returns the name of a signal if it was ignored when the shell was created.
+    pub fn ignored_signal_name_at_entry(&self, signal_type: TrapSignal) -> Option<&str> {
+        i32::try_from(signal_type)
+            .ok()
+            .and_then(|number| self.ignored_signals_at_entry.get(&number))
+            .map(String::as_str)
+    }
+
+    pub(crate) fn record_ignored_signal_at_entry(&mut self, number: i32, name: String) {
+        self.ignored_signals_at_entry.insert(number, name);
     }
 
     /// Registers a handler for a trap signal.
@@ -231,5 +253,35 @@ impl TrapHandlerConfig {
     /// * `signal_type` - The type of signal to remove handlers for.
     pub fn remove_handlers(&mut self, signal_type: TrapSignal) {
         self.handlers.remove(&signal_type);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TrapHandlerConfig, TrapSignal};
+
+    #[test]
+    fn ignored_signal_can_be_looked_up_by_trap_signal() {
+        let Some(signal) = crate::sys::signal::Signal::iterator().next() else {
+            return;
+        };
+        let mut traps = TrapHandlerConfig::default();
+        traps.record_ignored_signal_at_entry(signal as i32, signal.as_str().to_owned());
+
+        assert_eq!(
+            traps.ignored_signal_name_at_entry(TrapSignal::Signal(signal)),
+            Some(signal.as_str())
+        );
+    }
+
+    #[test]
+    fn ignored_signal_snapshot_is_preserved_by_clone() {
+        let mut traps = TrapHandlerConfig::default();
+        traps.record_ignored_signal_at_entry(10, "SIGUSR1".to_owned());
+
+        let cloned = traps.clone();
+        let ignored = cloned.iter_ignored_signals_at_entry().collect::<Vec<_>>();
+
+        assert_eq!(ignored, vec![(10, "SIGUSR1")]);
     }
 }

@@ -558,6 +558,10 @@ cases:
       trap 'echo c' EXIT
       trap -p | sort
 
+  - name: "trap -p reports signals ignored at shell entry in subshells"
+    stdin: |
+      bash -c 'trap "" USR1; exec "$1" --norc --noprofile -c "trap -p USR1; (trap -p USR1)"' _ "$0"
+
   - name: "trap -p - with specific signal"
     stdin: |
       trap 'echo "[int]"' INT

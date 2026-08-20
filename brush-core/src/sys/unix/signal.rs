@@ -4,6 +4,76 @@ use crate::{error, sys, traps};
 
 pub(crate) use nix::sys::signal::Signal;
 
+static PROCESS_ENTRY_IGNORED_SIGNALS: std::sync::OnceLock<Vec<(i32, String)>> =
+    std::sync::OnceLock::new();
+
+#[cfg_attr(
+    target_vendor = "apple",
+    unsafe(link_section = "__DATA,__mod_init_func")
+)]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".init_array"))]
+#[used]
+static CAPTURE_IGNORED_SIGNALS_AT_PROCESS_ENTRY: extern "C" fn() =
+    capture_ignored_signals_at_process_entry;
+
+extern "C" fn capture_ignored_signals_at_process_entry() {
+    let _ignored_signals = PROCESS_ENTRY_IGNORED_SIGNALS.get_or_init(query_ignored_signals);
+}
+
+pub(crate) fn ignored_signals() -> &'static [(i32, String)] {
+    PROCESS_ENTRY_IGNORED_SIGNALS
+        .get_or_init(query_ignored_signals)
+        .as_slice()
+}
+
+fn query_ignored_signals() -> Vec<(i32, String)> {
+    let signals = Signal::iterator().map(|signal| (signal as i32, signal.as_str().to_owned()));
+
+    #[cfg(target_os = "linux")]
+    let signals = signals.chain(realtime_signals());
+
+    signals
+        .filter_map(|(number, name)| match signal_is_ignored(number) {
+            Ok(true) => Some((number, name)),
+            Ok(false) | Err(_) => None,
+        })
+        .collect()
+}
+
+fn signal_is_ignored(signal: i32) -> Result<bool, error::Error> {
+    let mut action = std::mem::MaybeUninit::<nix::libc::sigaction>::uninit();
+
+    // SAFETY: A null second argument queries the current disposition without changing it.
+    // On success, `sigaction` fully initializes the output structure.
+    nix::errno::Errno::result(unsafe {
+        nix::libc::sigaction(signal, std::ptr::null(), action.as_mut_ptr())
+    })?;
+
+    // SAFETY: The successful `sigaction` call above initialized `action`.
+    let action = unsafe { action.assume_init() };
+    Ok(action.sa_sigaction == nix::libc::SIG_IGN)
+}
+
+#[cfg(target_os = "linux")]
+fn realtime_signals() -> impl Iterator<Item = (i32, String)> {
+    let min = nix::libc::SIGRTMIN();
+    let max = nix::libc::SIGRTMAX();
+    let midpoint = min + (max - min) / 2;
+
+    (min..=max).map(move |signal| {
+        let name = if signal == min {
+            "SIGRTMIN".to_owned()
+        } else if signal <= midpoint {
+            format!("SIGRTMIN+{}", signal - min)
+        } else if signal == max {
+            "SIGRTMAX".to_owned()
+        } else {
+            format!("SIGRTMAX-{}", max - signal)
+        };
+        (signal, name)
+    })
+}
+
 pub(crate) fn continue_process(pid: sys::process::ProcessId) -> Result<(), error::Error> {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::SIGCONT)
         .map_err(|_errno| error::ErrorKind::FailedToSendSignal)?;
