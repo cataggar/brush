@@ -38,6 +38,18 @@ impl TryFrom<i32> for Signal {
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         Err(error::ErrorKind::InvalidSignal(std::format!("{value}")).into())
     }
+
+    pub(crate) const fn realtime_signal_definitions() -> &'static [(i32, String)] {
+        &[]
+    }
+
+    pub(crate) fn realtime_signal_from_name(_name: &str) -> Option<i32> {
+        None
+    }
+
+    pub(crate) fn realtime_signal_name(_number: i32) -> Option<&'static str> {
+        None
+    }
 }
 
 pub(crate) fn ignored_signals() -> &'static [(i32, String)] {

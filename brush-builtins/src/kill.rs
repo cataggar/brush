@@ -34,7 +34,7 @@ impl builtins::Command for KillCommand {
         context: brush_core::ExecutionContext<'_, SE>,
     ) -> Result<brush_core::ExecutionResult, Self::Error> {
         // Default signal is SIGKILL.
-        let mut trap_signal = TrapSignal::Signal(nix::sys::signal::Signal::SIGKILL.into());
+        let mut trap_signal = TrapSignal::Signal(nix::sys::signal::Signal::SIGKILL);
 
         // Try parsing the signal name (if specified).
         if let Some(signal_name) = &self.signal_name {
@@ -145,9 +145,16 @@ fn print_signals(
 
             let signal = if let Ok(n) = s.parse::<i32>() {
                 // bash compatibility. `SIGHUP` -> `HUP`
-                TrapSignal::try_from(n).map(|s| {
-                    PrintSignal::Name(s.as_str().strip_prefix("SIG").unwrap_or(s.as_str()))
-                })
+                TrapSignal::try_from(n)
+                    .or_else(|error| {
+                        n.checked_sub(128)
+                            .filter(|signal| *signal > 0)
+                            .ok_or(error)
+                            .and_then(TrapSignal::try_from)
+                    })
+                    .map(|s| {
+                        PrintSignal::Name(s.as_str().strip_prefix("SIG").unwrap_or(s.as_str()))
+                    })
             } else {
                 TrapSignal::try_from(s.as_str()).map(|sig| {
                     i32::try_from(sig).map_or(PrintSignal::Name(sig.as_str()), PrintSignal::Num)
